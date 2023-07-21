@@ -394,7 +394,7 @@ int main(int argc, char **argv)
             break;
 
         case 'c':
-            strncpy(host_conn, optarg, strlen(optarg));
+            memcpy(host_conn, optarg, strlen(optarg));
             break;
 
         case 'o':
