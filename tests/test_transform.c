@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <assert.h>
 #include <string.h>
 #include <sys/time.h>
 
@@ -15,6 +16,11 @@ void print_mask(struct um_transform *ctx) {
 
 int main(void)
 {
+    struct um_transform invalid_tran;
+    memset(&invalid_tran, 0, sizeof(invalid_tran));
+    unsigned char invalid_buf[MASK_LEN] = { 0 };
+    assert(unmaskbuf(&invalid_tran, invalid_buf, MASK_LEN - 1) == 0);
+
     printf("MASK_LEN: %d\n", MASK_LEN);
 
     struct um_transform tran;

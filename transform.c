@@ -33,7 +33,13 @@ size_t maskbuf(struct um_transform *ctx, unsigned char *buf, size_t buflen) {
 
 size_t unmaskbuf(struct um_transform *ctx, unsigned char *buf, size_t buflen) {
     unsigned char rcv_mask[MASK_LEN];
-    size_t len = buflen - MASK_LEN;
+    size_t len;
+
+    if (buflen < MASK_LEN) {
+        return 0;
+    }
+
+    len = buflen - MASK_LEN;
 
     memcpy(rcv_mask, buf + len, MASK_LEN);
     transform(buf, len, rcv_mask);
