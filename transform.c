@@ -7,6 +7,7 @@
 
 #include "log.h"
 #include "transform.h"
+#include "udpmask.h"
 
 void check_gen_mask(struct um_transform *ctx)
 {
@@ -23,6 +24,10 @@ void check_gen_mask(struct um_transform *ctx)
 }
 
 size_t maskbuf(struct um_transform *ctx, unsigned char *buf, size_t buflen) {
+    if (buflen > UM_BUFFER - MASK_LEN) {
+        return 0;
+    }
+
     check_gen_mask(ctx);
 
     transform(buf, buflen, ctx->mask);

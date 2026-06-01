@@ -21,6 +21,10 @@ int main(void)
     unsigned char invalid_buf[MASK_LEN] = { 0 };
     assert(unmaskbuf(&invalid_tran, invalid_buf, MASK_LEN - 1) == 0);
 
+    unsigned char oversized_buf[UM_BUFFER + MASK_LEN] = { 0 };
+    assert(maskbuf(&invalid_tran, oversized_buf,
+                   UM_BUFFER - MASK_LEN + 1) == 0);
+
     printf("MASK_LEN: %d\n", MASK_LEN);
 
     struct um_transform tran;

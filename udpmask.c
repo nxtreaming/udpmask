@@ -302,10 +302,12 @@ int start(enum um_mode mode)
                     }
 
                     buflen = (*snd_buf_func)(&tran, buf, buflen);
-                    sendto(map[sock_idx].sock, (void *) buf, buflen, 0,
-                           (struct sockaddr *) &conn_addr,
-                           sizeof(conn_addr));
-                    UPDATE_LAST_USE(sock_idx, time_val);
+                    if (buflen > 0) {
+                        sendto(map[sock_idx].sock, (void *) buf, buflen, 0,
+                               (struct sockaddr *) &conn_addr,
+                               sizeof(conn_addr));
+                        UPDATE_LAST_USE(sock_idx, time_val);
+                    }
                 }
             }
         }
@@ -320,9 +322,11 @@ int start(enum um_mode mode)
                     buflen = (size_t) ret;
 
                     buflen = (*rcv_buf_func)(&tran, buf, buflen);
-                    sendto(bind_sock, (void *) buf, buflen, 0,
-                           (struct sockaddr *) &map[i].from,
-                           sizeof(map[i].from));
+                    if (buflen > 0) {
+                        sendto(bind_sock, (void *) buf, buflen, 0,
+                               (struct sockaddr *) &map[i].from,
+                               sizeof(map[i].from));
+                    }
                 }
             }
         }
