@@ -1,7 +1,7 @@
 CC	= gcc
 CFLAGS	:= $(CFLAGS) -std=gnu99 -O2 -Wall
 OBJS	= udpmask.o log.o transform.o
-TESTS	= tests/test_transform
+TESTS	= tests/test_transform tests/test_log
 EXEC	= udpmask
 PREFIX 	= /usr/local
 
@@ -17,7 +17,7 @@ tests/test_%: tests/test_%.c %.o log.o
 	$(CC) $(CFLAGS) -I. -o $@ $^
 
 test: $(TESTS)
-	$(foreach test_cmd,$(TESTS),$(test_cmd))
+	$(foreach test_cmd,$(TESTS),$(test_cmd);)
 
 install: $(EXEC)
 	install -d $(DESTDIR)$(PREFIX)/bin

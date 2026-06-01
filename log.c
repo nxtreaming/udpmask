@@ -59,12 +59,11 @@ void mylog(int priority, const char *message, ...)
             break;
         }
 
-        sprintf(tmp, "[%lu] %s[%d]: %s: ", t, logname, getpid(), loglevel);
+        snprintf(tmp, sizeof(tmp), "[%lu] %s[%d]: %s: ",
+                 t, logname, getpid(), loglevel);
 
-        char out[strlen(tmp) + strlen(message) + 1];
-        strcpy(out, tmp);
-        strcat(out, message);
-        strcat(out, "\n");
+        char out[strlen(tmp) + strlen(message) + 2];
+        snprintf(out, sizeof(out), "%s%s\n", tmp, message);
 
         va_start(ap, message);
         vfprintf(stderr, out, ap);
