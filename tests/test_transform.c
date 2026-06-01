@@ -16,6 +16,18 @@ void print_mask(struct um_transform *ctx) {
 
 int main(void)
 {
+    unsigned char transform_mask[MASK_LEN] = { 0x11, 0x22, 0x33, 0x44 };
+    unsigned char transform_buf[] = { 0x01, 0x02, 0x03, 0x04, 0x05 };
+    unsigned char transform_expected[] = { 0x10, 0x20, 0x30, 0x40, 0x14 };
+
+    transformbuf(transform_buf, sizeof(transform_buf), transform_mask);
+    assert(memcmp(transform_buf, transform_expected, sizeof(transform_buf)) == 0);
+
+    transformbuf(transform_buf, sizeof(transform_buf), transform_mask);
+    assert(memcmp(transform_buf,
+                  (unsigned char[]) { 0x01, 0x02, 0x03, 0x04, 0x05 },
+                  sizeof(transform_buf)) == 0);
+
     struct um_transform invalid_tran;
     memset(&invalid_tran, 0, sizeof(invalid_tran));
     unsigned char invalid_buf[MASK_LEN] = { 0 };

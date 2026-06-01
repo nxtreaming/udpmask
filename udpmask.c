@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <fcntl.h>
 #include <libgen.h>
 #include <netdb.h>
 #include <signal.h>
@@ -27,6 +28,51 @@ static int timeout = UM_TIMEOUT;
 static struct um_sockmap map[UM_MAX_CLIENT];
 
 static volatile sig_atomic_t signal_term = 0;
+
+#define UM_DRAIN_BATCH      64
+#define UM_SOCK_BUF_SIZE    (1024 * 1024)
+
+static inline int would_block(void)
+{
+    return errno == EAGAIN || errno == EWOULDBLOCK;
+}
+
+static int set_sock_nonblocking(int sock)
+{
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags < 0) {
+        return -1;
+    }
+
+    return fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+}
+
+static void tune_sock_buffers(int sock)
+{
+    int size = UM_SOCK_BUF_SIZE;
+
+    setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size));
+    setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size));
+}
+
+static int new_sock_nonblocking(void)
+{
+    int sock = NEW_SOCK();
+    if (sock < 0) {
+        return -1;
+    }
+
+    tune_sock_buffers(sock);
+
+    if (set_sock_nonblocking(sock) < 0) {
+        int saved_errno = errno;
+        close(sock);
+        errno = saved_errno;
+        return -1;
+    }
+
+    return sock;
+}
 
 static int usage(void)
 {
@@ -76,6 +122,9 @@ static inline void update_sock_fd_max(void)
 // um_sockmap
 /////////////////////////////////////////////////////////////////////
 
+static inline int sockaddr_in_cmp(const struct sockaddr_in *a,
+                                  const struct sockaddr_in *b);
+
 #define UPDATE_LAST_USE(idx, time_val)          \
     do {                                        \
         if (time_val != TIME_INVALID) {         \
@@ -102,6 +151,17 @@ static inline int um_sockmap_ins(int sock, struct sockaddr_in *addr)
     }
 
     return i;
+}
+
+static inline int um_sockmap_find(const struct sockaddr_in *addr)
+{
+    for (int i = 0; i < ARRAY_SIZE(map); i++) {
+        if (map[i].in_use && sockaddr_in_cmp(addr, &(map[i].from)) == 0) {
+            return i;
+        }
+    }
+
+    return -1;
 }
 
 static inline int um_sockmap_clean(fd_set *active_set, time_t time_val)
@@ -223,16 +283,13 @@ int start(enum um_mode mode)
 
     log_info("Connection timeout %ds", timeout);
 
-    int clean_up_trigged;
+    time_t time_last_clean = 0;
     time_t time_val;
 
     update_sock_fd_max();
 
     while (!signal_term) {
         read_fd_set = active_fd_set;
-
-        sock_idx = -1;
-        clean_up_trigged = 0;
 
         select_ret = select(sock_fd_max + 1, &read_fd_set, NULL, NULL, NULL);
         if (select_ret <= 0) {
@@ -244,32 +301,46 @@ int start(enum um_mode mode)
 
         if (FD_ISSET(bind_sock, &read_fd_set)) {
             // Deal with packets from "listening" socket
-            ret = recvfrom(bind_sock, (void *) buf, UM_BUFFER, 0,
-                           (struct sockaddr *) &recv_addr, &recv_addr_len);
+            for (int drained = 0;
+                 drained < UM_DRAIN_BATCH && !signal_term;
+                 drained++) {
+                recv_addr_len = sizeof(recv_addr);
+                ret = recvfrom(bind_sock, (void *) buf, UM_BUFFER, 0,
+                               (struct sockaddr *) &recv_addr,
+                               &recv_addr_len);
 
-            if (ret > 0) {
+                if (ret < 0) {
+                    if (would_block()) {
+                        break;
+                    }
+                    if (errno == EINTR) {
+                        continue;
+                    }
+                    log_warn("recvfrom(): %s", strerror(errno));
+                    break;
+                }
+                if (ret == 0) {
+                    continue;
+                }
+
                 buflen = (size_t) ret;
 
                 // Try to locate existing connection from map
-                for (int i = 0; i < ARRAY_SIZE(map); i++) {
-                    if (map[i].in_use &&
-                        sockaddr_in_cmp(&recv_addr, &(map[i].from)) == 0) {
-                        sock_idx = i;
-                        break;
-                    }
-                }
+                sock_idx = um_sockmap_find(&recv_addr);
 
                 if (sock_idx < 0) {
                     log_info("New connection from [%s:%hu]",
                              inet_ntoa(recv_addr.sin_addr),
                              ntohs(recv_addr.sin_port));
 
-                    tmp_sock = NEW_SOCK();
+                    tmp_sock = new_sock_nonblocking();
                     if (tmp_sock < 0) {
-                        log_err("socket(): %s", strerror(errno));
+                        log_err("socket()/fcntl(): %s", strerror(errno));
                     } else {
-                        um_sockmap_clean(&active_fd_set, time_val);
-                        clean_up_trigged = 1;
+                        if (time_val - time_last_clean >= 1) {
+                            um_sockmap_clean(&active_fd_set, time_val);
+                            time_last_clean = time_val;
+                        }
 
                         sock_idx = um_sockmap_ins(tmp_sock, &recv_addr);
                         if (sock_idx >= 0) {
@@ -282,23 +353,33 @@ int start(enum um_mode mode)
                                      "Dropping new connection [%s:%hu]",
                                      inet_ntoa(recv_addr.sin_addr),
                                      ntohs(recv_addr.sin_port));
+                            close(tmp_sock);
                         }
                     }
                 } 
                 
                 // Check sock_idx again to deal with new connection
                 if (sock_idx >= 0) {
-                    if (time_val - time_conn_addr >= UM_HOST_TIMEOUT ||
-                        conn_addr.sin_addr.s_addr == 0) {
+                    int conn_addr_missing = conn_addr.sin_addr.s_addr == 0;
+                    int conn_addr_expired =
+                        !conn_addr_missing &&
+                        time_val - time_conn_addr >= UM_HOST_TIMEOUT;
+
+                    if ((conn_addr_missing && time_val != time_conn_addr) ||
+                        conn_addr_expired) {
                         rh = gethostbyname2(host_conn, AF_INET);
+                        time_conn_addr = time_val;
                         if (!rh) {
                             herror("gethostbyname2()");
                         } else {
                             memcpy(&conn_addr_in, rh->h_addr_list[0],
                                    rh->h_length);
                             conn_addr.sin_addr = conn_addr_in;
-                            time_conn_addr = time_val;
                         }
+                    }
+
+                    if (conn_addr.sin_addr.s_addr == 0) {
+                        continue;
                     }
 
                     buflen = (*snd_buf_func)(&tran, buf, buflen);
@@ -314,9 +395,25 @@ int start(enum um_mode mode)
 
         for (int i = 0; i < ARRAY_SIZE(map); i++) {
             if (map[i].in_use && FD_ISSET(map[i].sock, &read_fd_set)) {
-                ret = recv(map[i].sock, (void *) buf, UM_BUFFER, 0);
+                for (int drained = 0;
+                     drained < UM_DRAIN_BATCH && !signal_term;
+                     drained++) {
+                    ret = recv(map[i].sock, (void *) buf, UM_BUFFER, 0);
 
-                if (ret > 0) {
+                    if (ret < 0) {
+                        if (would_block()) {
+                            break;
+                        }
+                        if (errno == EINTR) {
+                            continue;
+                        }
+                        log_warn("recv(): %s", strerror(errno));
+                        break;
+                    }
+                    if (ret == 0) {
+                        continue;
+                    }
+
                     UPDATE_LAST_USE(i, time_val);
 
                     buflen = (size_t) ret;
@@ -331,8 +428,9 @@ int start(enum um_mode mode)
             }
         }
 
-        if (!clean_up_trigged) {
+        if (time_val - time_last_clean >= 1) {
             um_sockmap_clean(&active_fd_set, time_val);
+            time_last_clean = time_val;
         }
     }
 
@@ -432,9 +530,9 @@ int main(int argc, char **argv)
         show_usage = 1;
     }
 
-    bind_sock = NEW_SOCK();
+    bind_sock = new_sock_nonblocking();
     if (bind_sock < 0) {
-        perror("socket()");
+        perror("socket()/fcntl()");
         ret = 1;
         goto exit;
     }
